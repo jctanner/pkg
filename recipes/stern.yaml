@@ -1,0 +1,15 @@
+name: stern
+version: 1.32.0
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://github.com/stern/stern/releases/download/v{{ version }}/stern_{{ version }}_{{ os }}_{{ arch }}.tar.gz
+archive: tar
+extract:
+  - "stern"
+dest: ~/bin/stern
+chmod: "0755"
