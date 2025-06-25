@@ -25,6 +25,7 @@ except ImportError:
 DEFAULT_INSTALL_DB = os.path.expanduser("~/.local/share/pkg")
 DEFAULT_RECIPE_REPO = "https://github.com/jctanner/pkg"
 
+
 def expand(path):
     return str(Path(os.path.expandvars(os.path.expanduser(path))))
 
@@ -32,8 +33,10 @@ def expand(path):
 def get_install_db_path(cli_override=None):
     return expand(cli_override or os.environ.get("PKG_DB") or DEFAULT_INSTALL_DB)
 
+
 def get_recipe_repo(cli_override=None):
     return cli_override or os.environ.get("PKG_RECIPE_REPO") or DEFAULT_RECIPE_REPO
+
 
 def get_raw_recipe_url(recipe_repo, name):
     # Convert GitHub repo URL to raw URL if it's github.com based
@@ -47,6 +50,7 @@ def get_raw_recipe_url(recipe_repo, name):
             return f"https://raw.githubusercontent.com/{user}/{repo}/main/recipes/{name}.yaml"
     return f"{recipe_repo.rstrip('/')}/{name}.yaml"
 
+
 def evaluate_template(template_str, context):
     return Template(template_str).render(**context)
 
@@ -56,7 +60,12 @@ def collect_variables(spec):
     for key, val in spec.get("variables", {}).items():
         if isinstance(val, dict):
             if "shell" in val:
-                result = subprocess.run(val["shell"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                result = subprocess.run(
+                    val["shell"],
+                    shell=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
                 context[key] = result.stdout.decode("utf-8").strip()
             elif "literal" in val:
                 context[key] = val["literal"]
@@ -94,6 +103,7 @@ def extract_archive(archive_type, archive_path, extract_list, dest_dir):
     else:
         raise ValueError(f"Unsupported archive type: {archive_type}")
 
+
 def resolve_yaml_source(yaml_path, recipe_repo=None):
     parsed = urlparse(yaml_path)
     if parsed.scheme in ("http", "https"):
@@ -125,10 +135,17 @@ def resolve_yaml_source(yaml_path, recipe_repo=None):
             print(f"Failed to fetch recipe from remote: {e}")
             sys.exit(1)
 
-    raise FileNotFoundError(f"YAML path not found and no valid recipe repo fallback: {yaml_path}")
+    raise FileNotFoundError(
+        f"YAML path not found and no valid recipe repo fallback: {yaml_path}"
+    )
 
-def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None, recipe_repo=None):
-    local_yaml_file, source_yaml = resolve_yaml_source(yaml_file, recipe_repo=recipe_repo)
+
+def install_tool(
+    yaml_file, override_dest_dir=None, install_db_dir=None, recipe_repo=None
+):
+    local_yaml_file, source_yaml = resolve_yaml_source(
+        yaml_file, recipe_repo=recipe_repo
+    )
 
     with open(local_yaml_file) as f:
         spec = yaml.safe_load(f)
@@ -222,11 +239,12 @@ def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None, recipe_
         "dest": dest_path,
         "installed_to": final_dest,
         "installed_at": datetime.now(timezone.utc).isoformat(),
-        "variables": context
+        "variables": context,
     }
 
     with open(os.path.join(install_db_dir, filename), "w") as f:
         yaml.safe_dump_all([spec, rendered_metadata], f, sort_keys=False)
+
 
 def list_installed(install_db_dir=None):
     install_db_dir = get_install_db_path(install_db_dir)
@@ -244,7 +262,9 @@ def list_installed(install_db_dir=None):
             if len(docs) < 2:
                 continue
             meta = docs[1]
-            print(f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {meta.get('installed_to','')}")
+            print(
+                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {meta.get('installed_to','')}"
+            )
 
 
 def uninstall_tool(install_id, install_db_dir=None):
@@ -277,7 +297,9 @@ def main():
     def add_common_args(p):
         p.add_argument("--dest-dir", help="Override destination directory (e.g. ~/bin)")
         p.add_argument("--install-db", help="Override install DB path (or use $PKG_DB)")
-        p.add_argument("--recipe-repo", help="Recipe repo (e.g. GitHub URL or local path)")
+        p.add_argument(
+            "--recipe-repo", help="Recipe repo (e.g. GitHub URL or local path)"
+        )
         p.add_argument("yaml_file", help="YAML file, URL, or recipe name")
 
     p_install = subparsers.add_parser("install", help="Install a tool from YAML")
@@ -286,7 +308,9 @@ def main():
     p_list = subparsers.add_parser("list", help="List installed tools")
     p_list.add_argument("--install-db", help="Override install DB path")
 
-    p_uninstall = subparsers.add_parser("uninstall", help="Uninstall a tool by install ID")
+    p_uninstall = subparsers.add_parser(
+        "uninstall", help="Uninstall a tool by install ID"
+    )
     p_uninstall.add_argument("install_id", help="Install ID shown by 'pkg list'")
     p_uninstall.add_argument("--install-db", help="Override install DB path")
 
@@ -307,4 +331,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
