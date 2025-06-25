@@ -1,0 +1,14 @@
+name: oc
+version: git-main
+
+variables:
+  repo:
+    literal: https://github.com/openshift/oc
+
+git: "{{ repo }}"
+build:
+  - rpm -q krb5-devel || (sudo dnf -y install krb5-devel)
+  - make
+artifact: "oc"
+dest: ~/bin/oc
+chmod: "0755"
