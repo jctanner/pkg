@@ -1,0 +1,14 @@
+name: kubectl
+version: latest
+
+variables:
+  version:
+    shell: curl -L -s https://dl.k8s.io/release/stable.txt
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/'
+  os:
+    literal: linux
+
+url: https://dl.k8s.io/release/{{ version }}/bin/{{ os }}/{{ arch }}/kubectl
+dest: ~/bin/kubectl
+chmod: '0755'

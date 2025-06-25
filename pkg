@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+
+import os
+import sys
+import yaml
+import shutil
+import urllib.request
+import subprocess
+import tempfile
+import zipfile
+import tarfile
+import hashlib
+from pathlib import Path
+from datetime import datetime, timezone
+import argparse
+
+try:
+    from packaging.version import parse as parse_version
+    from jinja2 import Template
+except ImportError:
+    print("Missing dependencies: Run 'pip install packaging jinja2 pyyaml'")
+    sys.exit(1)
+
+DEFAULT_INSTALL_DB = os.path.expanduser("~/.local/share/pkg")
+
+
+def expand(path):
+    return str(Path(os.path.expandvars(os.path.expanduser(path))))
+
+
+def get_install_db_path(cli_override=None):
+    return expand(cli_override or os.environ.get("PKG_DB") or DEFAULT_INSTALL_DB)
+
+
+def evaluate_template(template_str, context):
+    return Template(template_str).render(**context)
+
+
+def collect_variables(spec):
+    context = {}
+    for key, val in spec.get("variables", {}).items():
+        if isinstance(val, dict):
+            if "shell" in val:
+                result = subprocess.run(val["shell"], shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                context[key] = result.stdout.decode("utf-8").strip()
+            elif "literal" in val:
+                context[key] = val["literal"]
+            else:
+                raise ValueError(f"Variable '{key}' must define 'shell' or 'literal'")
+        else:
+            context[key] = str(val)
+    return context
+
+
+def run_build_steps(steps, cwd, env=None):
+    for step in steps:
+        print(f"Running: {step}")
+        result = subprocess.run(step, shell=True, cwd=cwd, env=env)
+        if result.returncode != 0:
+            raise RuntimeError(f"Build step failed: {step}")
+
+
+def download(url, dest):
+    print(f"Downloading: {url}")
+    with urllib.request.urlopen(url) as response:
+        with open(dest, "wb") as out_file:
+            out_file.write(response.read())
+
+
+def extract_archive(archive_type, archive_path, extract_list, dest_dir):
+    if archive_type == "tar":
+        with tarfile.open(archive_path, "r:*") as tar:
+            for member in extract_list:
+                tar.extract(member, path=dest_dir)
+    elif archive_type == "zip":
+        with zipfile.ZipFile(archive_path, "r") as zipf:
+            for member in extract_list:
+                zipf.extract(member, path=dest_dir)
+    else:
+        raise ValueError(f"Unsupported archive type: {archive_type}")
+
+
+def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None):
+    with open(yaml_file) as f:
+        spec = yaml.safe_load(f)
+
+    name = spec["name"]
+    version = spec.get("version", "unknown")
+    chmod_spec = spec.get("chmod")
+    source_yaml = os.path.abspath(yaml_file)
+    context = collect_variables(spec)
+
+    # Override top-level version with variable if available
+    if "version" in context:
+        version = context["version"]
+
+    url = evaluate_template(spec["url"], context) if "url" in spec else None
+    dest_path = expand(evaluate_template(spec["dest"], context))
+    final_dest = None
+
+    if override_dest_dir:
+        override_dest_dir = expand(override_dest_dir)
+        os.makedirs(override_dest_dir, exist_ok=True)
+        final_dest = os.path.join(override_dest_dir, os.path.basename(dest_path))
+    else:
+        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+        final_dest = dest_path
+
+    if url:
+        archive = spec.get("archive")
+        extract = spec.get("extract")
+        if archive and extract:
+            with tempfile.TemporaryDirectory(prefix=f"pkg-{name}-") as tmpdir:
+                tmp_archive = os.path.join(tmpdir, "archive")
+                download(url, tmp_archive)
+                extract_archive(archive, tmp_archive, extract, tmpdir)
+                extracted_path = os.path.join(tmpdir, extract[0])
+                shutil.copy(extracted_path, final_dest)
+        else:
+            download(url, final_dest)
+
+    elif "git" in spec:
+        git_url = evaluate_template(spec["git"], context)
+        build_steps = spec.get("build", [])
+        artifact = evaluate_template(spec.get("artifact", ""), context)
+        if not artifact:
+            raise ValueError("Missing 'artifact' field for git build")
+        with tempfile.TemporaryDirectory(prefix=f"pkg-{name}-") as tmpdir:
+            print(f"Cloning {git_url} into {tmpdir}")
+            subprocess.run(["git", "clone", "--depth=1", git_url, tmpdir], check=True)
+            run_build_steps(build_steps, cwd=tmpdir)
+            artifact_path = os.path.join(tmpdir, artifact)
+            if not os.path.exists(artifact_path):
+                raise FileNotFoundError(f"Built artifact not found: {artifact_path}")
+            shutil.copy(artifact_path, final_dest)
+
+    else:
+        raise ValueError("YAML must contain either 'url' or 'git' field")
+
+    if chmod_spec:
+        try:
+            if isinstance(chmod_spec, int) or str(chmod_spec).isdigit():
+                mode = int(str(chmod_spec), 8)
+            elif chmod_spec.startswith("0o"):
+                mode = int(chmod_spec, 8)
+            elif chmod_spec.startswith("+"):
+                st = os.stat(final_dest)
+                mode = st.st_mode | int(chmod_spec.replace("+", "0o"), 8)
+            else:
+                raise ValueError("Unsupported chmod format")
+            os.chmod(final_dest, mode)
+            print(f"Set permissions: {oct(mode)} on {final_dest}")
+        except Exception as e:
+            print(f"Failed to apply chmod '{chmod_spec}': {e}")
+
+    print(f"Installed {name} to {final_dest}")
+
+    install_db_dir = get_install_db_path(install_db_dir)
+    os.makedirs(install_db_dir, exist_ok=True)
+
+    hash_input = f"{name}|{version}|{final_dest}|{source_yaml}"
+    install_id = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
+    filename = f"PKG_{install_id}.yaml"
+
+    rendered_metadata = {
+        "name": name,
+        "version": version,
+        "url": url,
+        "dest": dest_path,
+        "installed_to": final_dest,
+        "installed_at": datetime.now(timezone.utc).isoformat(),
+        "variables": context
+    }
+
+    with open(os.path.join(install_db_dir, filename), "w") as f:
+        yaml.safe_dump_all([spec, rendered_metadata], f, sort_keys=False)
+
+def list_installed(install_db_dir=None):
+    install_db_dir = get_install_db_path(install_db_dir)
+    if not os.path.isdir(install_db_dir):
+        print("No tools installed.")
+        return
+
+    print(f"{'ID':12} {'NAME':20} {'VERSION':10} {'PATH'}")
+    for fname in sorted(os.listdir(install_db_dir)):
+        if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+            continue
+        install_id = fname[4:-5]
+        with open(os.path.join(install_db_dir, fname)) as f:
+            docs = list(yaml.safe_load_all(f))
+            if len(docs) < 2:
+                continue
+            meta = docs[1]
+            print(f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {meta.get('installed_to','')}")
+
+
+def uninstall_tool(install_id, install_db_dir=None):
+    install_db_dir = get_install_db_path(install_db_dir)
+    fname = f"PKG_{install_id}.yaml"
+    path = os.path.join(install_db_dir, fname)
+    if not os.path.exists(path):
+        print(f"No metadata found for install ID {install_id}")
+        return
+
+    with open(path) as f:
+        docs = list(yaml.safe_load_all(f))
+        meta = docs[1] if len(docs) > 1 else {}
+
+    binary_path = meta.get("installed_to")
+    if binary_path and os.path.exists(binary_path):
+        print(f"Removing binary: {binary_path}")
+        os.remove(binary_path)
+    else:
+        print(f"Binary path {binary_path} does not exist")
+
+    print(f"Removing metadata: {path}")
+    os.remove(path)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Minimal YAML-based installer (pkg)")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    def add_common_args(p):
+        p.add_argument("--dest-dir", help="Override destination directory (e.g. ~/bin)")
+        p.add_argument("--install-db", help="Override install DB path (or use $PKG_DB)")
+        p.add_argument("yaml_file", help="YAML file defining the install")
+
+    p_install = subparsers.add_parser("install", help="Install a tool from YAML")
+    add_common_args(p_install)
+
+    p_list = subparsers.add_parser("list", help="List installed tools")
+    p_list.add_argument("--install-db", help="Override install DB path")
+
+    p_uninstall = subparsers.add_parser("uninstall", help="Uninstall a tool by install ID")
+    p_uninstall.add_argument("install_id", help="Install ID shown by 'pkg list'")
+    p_uninstall.add_argument("--install-db", help="Override install DB path")
+
+    args = parser.parse_args()
+
+    if args.command == "install":
+        install_tool(args.yaml_file, args.dest_dir, args.install_db)
+    elif args.command == "list":
+        list_installed(args.install_db)
+    elif args.command == "uninstall":
+        uninstall_tool(args.install_id, args.install_db)
+
+
+if __name__ == "__main__":
+    main()
+
