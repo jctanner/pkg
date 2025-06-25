@@ -93,6 +93,8 @@ def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None):
     # Override top-level version with variable if available
     if "version" in context:
         version = context["version"]
+    else:
+        context["version"] = version
 
     url = evaluate_template(spec["url"], context) if "url" in spec else None
     dest_path = expand(evaluate_template(spec["dest"], context))
@@ -109,6 +111,7 @@ def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None):
     if url:
         archive = spec.get("archive")
         extract = spec.get("extract")
+        extract = [evaluate_template(x, context) for x in extract]
         if archive and extract:
             with tempfile.TemporaryDirectory(prefix=f"pkg-{name}-") as tmpdir:
                 tmp_archive = os.path.join(tmpdir, "archive")
