@@ -13,6 +13,7 @@ import hashlib
 from pathlib import Path
 from datetime import datetime, timezone
 import argparse
+from urllib.parse import urlparse
 
 try:
     from packaging.version import parse as parse_version
@@ -22,7 +23,7 @@ except ImportError:
     sys.exit(1)
 
 DEFAULT_INSTALL_DB = os.path.expanduser("~/.local/share/pkg")
-
+DEFAULT_RECIPE_REPO = "https://github.com/jctanner/pkg"
 
 def expand(path):
     return str(Path(os.path.expandvars(os.path.expanduser(path))))
@@ -31,6 +32,20 @@ def expand(path):
 def get_install_db_path(cli_override=None):
     return expand(cli_override or os.environ.get("PKG_DB") or DEFAULT_INSTALL_DB)
 
+def get_recipe_repo(cli_override=None):
+    return cli_override or os.environ.get("PKG_RECIPE_REPO") or DEFAULT_RECIPE_REPO
+
+def get_raw_recipe_url(recipe_repo, name):
+    # Convert GitHub repo URL to raw URL if it's github.com based
+    if recipe_repo.startswith("https://github.com/"):
+        parts = recipe_repo.rstrip("/").split("/")
+        if len(parts) >= 5:
+            user, repo = parts[3], parts[4]
+            return f"https://raw.githubusercontent.com/{user}/{repo}/main/recipes/{name}.yaml"
+        elif len(parts) == 3:
+            user, repo = parts[3], parts[4]
+            return f"https://raw.githubusercontent.com/{user}/{repo}/main/recipes/{name}.yaml"
+    return f"{recipe_repo.rstrip('/')}/{name}.yaml"
 
 def evaluate_template(template_str, context):
     return Template(template_str).render(**context)
@@ -79,9 +94,43 @@ def extract_archive(archive_type, archive_path, extract_list, dest_dir):
     else:
         raise ValueError(f"Unsupported archive type: {archive_type}")
 
+def resolve_yaml_source(yaml_path, recipe_repo=None):
+    parsed = urlparse(yaml_path)
+    if parsed.scheme in ("http", "https"):
+        print(f"Fetching remote YAML: {yaml_path}")
+        tmpfd, tmpfile = tempfile.mkstemp(suffix=".yaml")
+        os.close(tmpfd)
+        with urllib.request.urlopen(yaml_path) as response:
+            with open(tmpfile, "wb") as out:
+                out.write(response.read())
+        return tmpfile, yaml_path
 
-def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None):
-    with open(yaml_file) as f:
+    if os.path.isfile(yaml_path):
+        return yaml_path, os.path.abspath(yaml_path)
+
+    if not recipe_repo:
+        recipe_repo = get_recipe_repo()
+
+    if recipe_repo:
+        remote_url = get_raw_recipe_url(recipe_repo, yaml_path)
+        print(f"Attempting to fetch recipe '{yaml_path}' from {remote_url}")
+        tmpfd, tmpfile = tempfile.mkstemp(suffix=".yaml")
+        os.close(tmpfd)
+        try:
+            with urllib.request.urlopen(remote_url) as response:
+                with open(tmpfile, "wb") as out:
+                    out.write(response.read())
+            return tmpfile, remote_url
+        except Exception as e:
+            print(f"Failed to fetch recipe from remote: {e}")
+            sys.exit(1)
+
+    raise FileNotFoundError(f"YAML path not found and no valid recipe repo fallback: {yaml_path}")
+
+def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None, recipe_repo=None):
+    local_yaml_file, source_yaml = resolve_yaml_source(yaml_file, recipe_repo=recipe_repo)
+
+    with open(local_yaml_file) as f:
         spec = yaml.safe_load(f)
 
     name = spec["name"]
@@ -228,7 +277,8 @@ def main():
     def add_common_args(p):
         p.add_argument("--dest-dir", help="Override destination directory (e.g. ~/bin)")
         p.add_argument("--install-db", help="Override install DB path (or use $PKG_DB)")
-        p.add_argument("yaml_file", help="YAML file defining the install")
+        p.add_argument("--recipe-repo", help="Recipe repo (e.g. GitHub URL or local path)")
+        p.add_argument("yaml_file", help="YAML file, URL, or recipe name")
 
     p_install = subparsers.add_parser("install", help="Install a tool from YAML")
     add_common_args(p_install)
@@ -243,7 +293,12 @@ def main():
     args = parser.parse_args()
 
     if args.command == "install":
-        install_tool(args.yaml_file, args.dest_dir, args.install_db)
+        install_tool(
+            args.yaml_file,
+            override_dest_dir=args.dest_dir,
+            install_db_dir=args.install_db,
+            recipe_repo=args.recipe_repo,
+        )
     elif args.command == "list":
         list_installed(args.install_db)
     elif args.command == "uninstall":
