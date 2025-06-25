@@ -1,44 +1,90 @@
 # pkg
 
-**`pkg`** is a dumb, functional, YAML-based local package manager for installing CLI tools outside the system package manager.  
-It’s probably AI slop. But it’s *useful* AI slop — and it scratches an itch in my workflow.
+> Might be AI slop, but it's functional AI slop.
 
-## Why?
+A minimal, relocatable YAML-based package installer for Linux. Useful when you:
 
-- I want relocatable installs in `~/bin`, `/tmp/something/bin`, or anywhere else.
-- I don’t want to wrestle with `dnf`, `apt`, or `brew` when I just want `kubectl`.
-- I want minimal, declarative recipes I can version in a Git repo.
-- I want it to be easy to rip out a tool without touching my system.
+- Don't want to deal with your system package manager
+- Want portable installs into `~/bin` or any custom location
+- Like to define your own simple install recipes
 
-## What it does
+## Features
 
-- Installs a binary from a URL or builds from a git repo + make.
-- Extracts from `.tar.gz` or `.zip` archives.
-- Uses YAML files with support for:
-  - Jinja2 templating (`{{ version }}`, `{{ arch }}`, etc.)
-  - Shell-based variable resolution
-- Tracks install metadata in `~/.local/share/pkg` (or override with `--install-db`)
-- Lets you:
-  - `pkg install recipes/thing.yaml`
-  - `pkg list`
-  - `pkg uninstall <install-id>`
+- Install from `.tar.gz`, `.zip`, direct binaries, or `git` sources
+- Recipes defined in simple YAML
+- Support for build steps (e.g., `make`)
+- Jinja2 templating for dynamic URLs and paths
+- Variables with `literal:` or `shell:` values
+- Installation metadata stored for `list`/`uninstall`/`upgrade`
+- Override install destinations or DB paths via CLI or env
 
-## Example YAML
+## Usage
+
+```bash
+pkg install recipes/helm.yaml
+pkg install stern
+pkg install https://example.com/mytool.yaml
+```
+
+## Recipe Lookup Behavior
+
+If the argument to `pkg install` is not a file or URL, it is treated as a **recipe name** and fetched from a recipe repository.
+
+By default, this is:
+```
+https://raw.githubusercontent.com/jctanner/pkg/main/recipes/<name>.yaml
+```
+
+You can override this with:
+- `--recipe-repo` command-line argument
+- `PKG_RECIPE_REPO` environment variable
+
+Example:
+```bash
+PKG_RECIPE_REPO=https://raw.githubusercontent.com/myorg/myrecipes/main pkg install k9s
+```
+
+## Commands
+
+```bash
+pkg install <recipe>      # install a tool from YAML file, URL, or short name
+pkg list                  # list installed tools and versions
+pkg uninstall <install_id> # remove a previously installed tool
+```
+
+## Example YAML (tarball)
 
 ```yaml
-name: stern
-version: 1.32.0
+name: k9s
+version: 0.50.6
 
 variables:
-  os:
-    literal: linux
-  arch:
-    shell: uname -m | sed 's/x86_64/amd64/'
+  os: { literal: linux }
+  arch: { shell: uname -m | sed 's/x86_64/amd64/' }
 
-url: https://github.com/stern/stern/releases/download/v{{ version }}/stern_{{ version }}_{{ os }}_{{ arch }}.tar.gz
+url: https://github.com/derailed/k9s/releases/download/v{{ version }}/k9s_{{ os }}_{{ arch }}.tar.gz
 archive: tar
 extract:
-  - "stern"
-dest: ~/bin/stern
+  - k9s
+dest: ~/bin/k9s
 chmod: "0755"
 ```
+
+## Example YAML (git + make)
+
+```yaml
+name: oc
+version: git-main
+
+git: https://github.com/openshift/oc
+build:
+  - make
+artifact: oc
+dest: ~/bin/oc
+chmod: "0755"
+```
+
+---
+
+This project scratches an itch. Portable tools, YAML recipes, no root required.
+Feel free to hack it to your liking.
