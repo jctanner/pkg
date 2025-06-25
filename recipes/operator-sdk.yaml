@@ -1,0 +1,12 @@
+name: operator-sdk
+version: 1.40.0
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://github.com/operator-framework/operator-sdk/releases/download/v{{ version }}/operator-sdk_{{ os }}_{{ arch }}
+dest: ~/bin/operator-sdk
+chmod: "0755"
