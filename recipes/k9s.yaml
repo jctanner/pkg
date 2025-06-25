@@ -1,0 +1,15 @@
+name: k9s
+version: 0.50.6
+
+variables:
+  os:
+    literal: Linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://github.com/derailed/k9s/releases/download/v{{ version }}/k9s_{{ os }}_{{ arch }}.tar.gz
+archive: tar
+extract:
+  - "k9s"
+dest: ~/bin/k9s
+chmod: "0755"
