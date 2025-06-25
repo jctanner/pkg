@@ -111,7 +111,8 @@ def install_tool(yaml_file, override_dest_dir=None, install_db_dir=None):
     if url:
         archive = spec.get("archive")
         extract = spec.get("extract")
-        extract = [evaluate_template(x, context) for x in extract]
+        if extract is not None:
+            extract = [evaluate_template(x, context) for x in extract]
         if archive and extract:
             with tempfile.TemporaryDirectory(prefix=f"pkg-{name}-") as tmpdir:
                 tmp_archive = os.path.join(tmpdir, "archive")
