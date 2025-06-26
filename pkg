@@ -94,12 +94,23 @@ def download(url, dest):
 def extract_archive(archive_type, archive_path, extract_list, dest_dir):
     if archive_type == "tar":
         with tarfile.open(archive_path, "r:*") as tar:
-            for member in extract_list:
-                tar.extract(member, path=dest_dir)
+            members = tar.getmembers()
+            for name in extract_list:
+                # Find the actual member with matching basename
+                matched = [m for m in members if os.path.basename(m.name) == name]
+                if not matched:
+                    raise FileNotFoundError(f"{name} not found in archive")
+                for m in matched:
+                    tar.extract(m, path=dest_dir)
     elif archive_type == "zip":
         with zipfile.ZipFile(archive_path, "r") as zipf:
-            for member in extract_list:
-                zipf.extract(member, path=dest_dir)
+            for name in extract_list:
+                # Match the file by basename, similar to tar handling
+                matched = [z for z in zipf.namelist() if os.path.basename(z) == name]
+                if not matched:
+                    raise FileNotFoundError(f"{name} not found in archive")
+                for z in matched:
+                    zipf.extract(z, path=dest_dir)
     else:
         raise ValueError(f"Unsupported archive type: {archive_type}")
 

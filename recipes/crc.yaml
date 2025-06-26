@@ -1,0 +1,16 @@
+# https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.51.0/crc-linux-amd64.tar.xz
+name: crc
+version: 2.51.0
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/{{ version }}/crc-{{ os }}-{{ arch }}.tar.xz
+archive: tar
+extract:
+  - "crc-{{ os }}-{{ version }}-{{ arch }}/crc"
+dest: ~/bin/crc
+chmod: "0755"
