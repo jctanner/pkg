@@ -93,11 +93,22 @@ def download(url, dest):
 
 def extract_archive(archive_type, archive_path, extract_list, dest_dir):
     if archive_type == "tar":
+        '''
         with tarfile.open(archive_path, "r:*") as tar:
             members = tar.getmembers()
             for name in extract_list:
                 # Find the actual member with matching basename
                 matched = [m for m in members if os.path.basename(m.name) == name]
+                if not matched:
+                    raise FileNotFoundError(f"{name} not found in archive")
+                for m in matched:
+                    tar.extract(m, path=dest_dir)
+        '''
+        with tarfile.open(archive_path, "r:*") as tar:
+            members = tar.getmembers()
+            for name in extract_list:
+                # Match by basename, e.g., looking for 'helm'
+                matched = [m for m in members if m.name == name or os.path.basename(m.name) == name]
                 if not matched:
                     raise FileNotFoundError(f"{name} not found in archive")
                 for m in matched:
