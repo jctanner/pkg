@@ -1,0 +1,12 @@
+name: kubebuilder
+version: v4.6.0
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://github.com/kubernetes-sigs/kubebuilder/releases/download/{{ version }}/kubebuilder_{{ os }}_{{ arch }}
+dest: ~/bin/kubebuilder
+chmod: "0755"
