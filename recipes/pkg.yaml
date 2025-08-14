@@ -1,0 +1,7 @@
+name: pkg
+version: main
+
+url: https://raw.githubusercontent.com/jctanner/pkg/main/pkg
+dest: ~/bin/pkg
+chmod: "0755"
+
