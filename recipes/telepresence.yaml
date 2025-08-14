@@ -1,0 +1,12 @@
+name: telepresence
+version: v2.23.6
+
+variables:
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+  os:
+    literal: linux
+
+url: https://github.com/telepresenceio/telepresence/releases/download/{{ version }}/telepresence-{{ os }}-{{ arch }}
+dest: ~/bin/telepresence
+chmod: '0755'
