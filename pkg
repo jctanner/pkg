@@ -885,6 +885,243 @@ def check_all_updates(install_db_dir=None):
         print("All packages are up to date")
 
 
+def update_recipe(name, new_version, recipes_dir=None):
+    """
+    Update the version field in a recipe YAML file.
+
+    Args:
+        name: Recipe name (e.g., 'helm', 'kubectl')
+        new_version: New version string to set
+        recipes_dir: Path to recipes directory (defaults to ./recipes relative to script)
+
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    # Determine recipes directory
+    if recipes_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        recipes_dir = os.path.join(script_dir, "recipes")
+
+    recipe_path = os.path.join(recipes_dir, f"{name}.yaml")
+
+    # Check if recipe file exists
+    if not os.path.isfile(recipe_path):
+        print(f"Error: Recipe file not found: {recipe_path}")
+        return False
+
+    # Check if file is writable
+    if not os.access(recipe_path, os.W_OK):
+        print(f"Error: Recipe file is not writable: {recipe_path}")
+        return False
+
+    try:
+        # Read the file line by line to preserve formatting
+        with open(recipe_path, 'r') as f:
+            lines = f.readlines()
+
+        # Find and update the version line
+        version_updated = False
+        for i, line in enumerate(lines):
+            # Match version field (typically line 2, index 1)
+            if line.strip().startswith('version:'):
+                # Extract indentation and update value
+                indent = len(line) - len(line.lstrip())
+                lines[i] = ' ' * indent + f'version: {new_version}\n'
+                version_updated = True
+                break
+
+        if not version_updated:
+            print(f"Error: Could not find 'version:' field in {recipe_path}")
+            return False
+
+        # Write atomically using temp file
+        temp_path = recipe_path + '.tmp'
+        with open(temp_path, 'w') as f:
+            f.writelines(lines)
+
+        # Atomic rename
+        os.rename(temp_path, recipe_path)
+
+        return True
+
+    except PermissionError as e:
+        print(f"Error: Permission denied updating {recipe_path}: {e}")
+        return False
+    except IOError as e:
+        print(f"Error: I/O error updating {recipe_path}: {e}")
+        # Clean up temp file if it exists
+        temp_path = recipe_path + '.tmp'
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except:
+                pass
+        return False
+    except Exception as e:
+        print(f"Error: Unexpected error updating {recipe_path}: {e}")
+        return False
+
+
+def update_command(package_names=None, update_all=False, skip_confirmation=False,
+                   install_db_dir=None, recipes_dir=None):
+    """
+    Update recipe files with latest versions.
+
+    Args:
+        package_names: List of package names to update (or None if update_all=True)
+        update_all: Update all installed packages
+        skip_confirmation: Skip confirmation prompt (--yes flag)
+        install_db_dir: Path to install database
+        recipes_dir: Path to recipes directory
+    """
+    install_db_dir = get_install_db_path(install_db_dir)
+
+    if recipes_dir is None:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        recipes_dir = os.path.join(script_dir, "recipes")
+
+    # Phase 1: Gather candidates
+    candidates = []
+
+    if update_all:
+        # Get all installed packages
+        if not os.path.isdir(install_db_dir):
+            print("No tools installed.")
+            return
+
+        for fname in sorted(os.listdir(install_db_dir)):
+            if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+                continue
+
+            with open(os.path.join(install_db_dir, fname)) as f:
+                content = f.read()
+                parts = content.split('\n---\n', 1)
+                if len(parts) < 1:
+                    continue
+                spec = yaml.safe_load(parts[0])
+                if not spec:
+                    continue
+
+                name = spec.get("name", "")
+                current_version = spec.get("version", "unknown")
+                candidates.append((name, current_version, spec))
+    else:
+        # Get specific packages
+        if not os.path.isdir(install_db_dir):
+            print("No tools installed.")
+            return
+
+        for name in package_names:
+            # Find package in install DB
+            found = False
+            for fname in os.listdir(install_db_dir):
+                if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+                    continue
+
+                with open(os.path.join(install_db_dir, fname)) as f:
+                    content = f.read()
+                    parts = content.split('\n---\n', 1)
+                    if len(parts) < 1:
+                        continue
+                    spec = yaml.safe_load(parts[0])
+                    if not spec or spec.get("name") != name:
+                        continue
+
+                    current_version = spec.get("version", "unknown")
+                    candidates.append((name, current_version, spec))
+                    found = True
+                    break
+
+            if not found:
+                print(f"Warning: Package '{name}' is not installed")
+
+    if not candidates:
+        print("No packages to check for updates")
+        return
+
+    # Phase 2: Check for updates
+    updates = []
+
+    for name, current_version, spec in candidates:
+        # Evaluate variables for templating
+        context = collect_variables(spec)
+        if "version" not in context:
+            context["version"] = current_version
+
+        # Evaluate git URL if it's templated
+        if "git" in spec:
+            git_url = spec["git"]
+            if "{{" in git_url:
+                spec["git"] = evaluate_template(git_url, context)
+
+        # Check for update
+        latest_version, source = check_update(name, current_version, spec)
+
+        if latest_version and latest_version != current_version:
+            # Verify recipe file exists locally
+            recipe_path = os.path.join(recipes_dir, f"{name}.yaml")
+            if not os.path.isfile(recipe_path):
+                print(f"Warning: Recipe file not found for '{name}': {recipe_path}")
+                print(f"         Package may have been installed from remote recipe")
+                continue
+
+            updates.append({
+                'name': name,
+                'current_version': current_version,
+                'latest_version': latest_version,
+                'source': source
+            })
+
+    if not updates:
+        print("All recipes are already up to date")
+        return
+
+    # Phase 3: Display and confirm
+    print("\nThe following recipes will be updated:\n")
+    print(f"{'NAME':20} {'CURRENT':15} {'LATEST':15} {'SOURCE':20}")
+    print("=" * 70)
+
+    for update in updates:
+        print(f"{update['name']:20} {update['current_version']:15} "
+              f"{update['latest_version']:15} {update['source']:20}")
+
+    print("=" * 70)
+    print(f"{len(updates)} recipe(s) will be updated\n")
+
+    if not skip_confirmation:
+        try:
+            response = input("Proceed with updates? [y/N]: ")
+            if response.lower() not in ('y', 'yes'):
+                print("Update cancelled")
+                return
+        except (KeyboardInterrupt, EOFError):
+            print("\nUpdate cancelled")
+            return
+
+    # Phase 4: Execute updates
+    print("\nUpdating recipes...")
+    success_count = 0
+    failed_count = 0
+
+    for update in updates:
+        name = update['name']
+        new_version = update['latest_version']
+
+        if update_recipe(name, new_version, recipes_dir):
+            print(f"✓ Updated {name}: {update['current_version']} -> {new_version}")
+            success_count += 1
+        else:
+            print(f"✗ Failed to update {name}")
+            failed_count += 1
+
+    # Summary
+    print(f"\nSummary: {success_count} updated", end="")
+    if failed_count > 0:
+        print(f", {failed_count} failed")
+    else:
+        print()
+
+
 def verify_all_tools(install_db_dir=None):
     """Verify all installed packages."""
     install_db_dir = get_install_db_path(install_db_dir)
@@ -960,6 +1197,21 @@ def main():
     )
     p_check_updates.add_argument("--install-db", help="Override install DB path")
 
+    p_update = subparsers.add_parser(
+        "update-recipes", help="Update recipe version numbers"
+    )
+    p_update.add_argument(
+        "package_name", nargs='*', help="Package name(s) to update"
+    )
+    p_update.add_argument(
+        "--all", action="store_true", help="Update all installed packages"
+    )
+    p_update.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+    )
+    p_update.add_argument("--install-db", help="Override install DB path")
+    p_update.add_argument("--recipes-dir", help="Override recipes directory path")
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -980,6 +1232,18 @@ def main():
             verify_tool(args.install_id, args.install_db)
     elif args.command == "check-updates":
         check_all_updates(args.install_db)
+    elif args.command == "update-recipes":
+        if not args.all and not args.package_name:
+            print("Error: Specify package name(s) or use --all")
+            sys.exit(1)
+
+        update_command(
+            package_names=args.package_name if args.package_name else None,
+            update_all=args.all,
+            skip_confirmation=args.yes,
+            install_db_dir=args.install_db,
+            recipes_dir=getattr(args, 'recipes_dir', None)
+        )
 
 
 if __name__ == "__main__":
