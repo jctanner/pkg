@@ -687,6 +687,45 @@ def verify_tool(install_id, install_db_dir=None):
     return all_valid
 
 
+def verify_all_tools(install_db_dir=None):
+    """Verify all installed packages."""
+    install_db_dir = get_install_db_path(install_db_dir)
+    if not os.path.isdir(install_db_dir):
+        print("No tools installed.")
+        return True
+
+    all_packages_valid = True
+    package_count = 0
+    valid_count = 0
+    invalid_count = 0
+
+    for fname in sorted(os.listdir(install_db_dir)):
+        if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+            continue
+
+        install_id = fname[4:-5]
+        package_count += 1
+
+        # Verify this package
+        is_valid = verify_tool(install_id, install_db_dir)
+        if is_valid:
+            valid_count += 1
+        else:
+            invalid_count += 1
+            all_packages_valid = False
+
+        print()  # Blank line between packages
+
+    # Print summary
+    print("=" * 60)
+    print(f"Verification Summary:")
+    print(f"  Total packages: {package_count}")
+    print(f"  Valid: {valid_count}")
+    print(f"  Invalid: {invalid_count}")
+
+    return all_packages_valid
+
+
 def main():
     parser = argparse.ArgumentParser(description="Minimal YAML-based installer (pkg)")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -714,8 +753,9 @@ def main():
     p_verify = subparsers.add_parser(
         "verify", help="Verify installed files match their checksums"
     )
-    p_verify.add_argument("install_id", help="Install ID shown by 'pkg list'")
+    p_verify.add_argument("install_id", nargs='?', help="Install ID shown by 'pkg list' (omit to verify all)")
     p_verify.add_argument("--install-db", help="Override install DB path")
+    p_verify.add_argument("--all", action="store_true", help="Verify all installed packages")
 
     args = parser.parse_args()
 
@@ -731,7 +771,10 @@ def main():
     elif args.command == "uninstall":
         uninstall_tool(args.install_id, args.install_db)
     elif args.command == "verify":
-        verify_tool(args.install_id, args.install_db)
+        if args.all or args.install_id is None:
+            verify_all_tools(args.install_db)
+        else:
+            verify_tool(args.install_id, args.install_db)
 
 
 if __name__ == "__main__":
