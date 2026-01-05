@@ -687,6 +687,204 @@ def verify_tool(install_id, install_db_dir=None):
     return all_valid
 
 
+def get_github_token():
+    """
+    Get GitHub token from environment variable or .github_token file.
+
+    Returns token string or None if not found.
+    """
+    # Try environment variable first
+    token = os.environ.get("GITHUB_TOKEN")
+    if token:
+        return token
+
+    # Fallback to .github_token file
+    token_file = os.path.join(os.path.dirname(__file__), ".github_token")
+    if os.path.isfile(token_file):
+        try:
+            with open(token_file, "r") as f:
+                token = f.read().strip()
+                if token:
+                    return token
+        except Exception:
+            pass
+
+    return None
+
+
+def check_update(name, current_version, spec):
+    """
+    Check for available updates for a package.
+
+    Returns (latest_version, source) or (None, error_message)
+    """
+    # Look for update script in updates/ directory
+    script_dir = os.path.join(os.path.dirname(__file__), "updates")
+
+    # Get GitHub token for authenticated API calls
+    github_token = get_github_token()
+
+    # Try multiple extensions: .sh, .py, or no extension
+    for script_name in [f"{name}.sh", f"{name}.py", name]:
+        script_path = os.path.join(script_dir, script_name)
+        if os.path.isfile(script_path) and os.access(script_path, os.X_OK):
+            try:
+                # Pass GitHub token as environment variable
+                env = os.environ.copy()
+                if github_token:
+                    env["GITHUB_TOKEN"] = github_token
+
+                result = subprocess.run(
+                    [script_path],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=30,
+                    text=True,
+                    env=env
+                )
+                if result.returncode == 0:
+                    latest_version = result.stdout.strip()
+                    if latest_version:
+                        return latest_version, f"updates/{script_name}"
+                else:
+                    return None, f"Script failed: {result.stderr.strip()}"
+            except subprocess.TimeoutExpired:
+                return None, "Script timeout"
+            except Exception as e:
+                return None, f"Script error: {str(e)}"
+
+    # Fallback: Auto-detect from GitHub URL or git repo
+    github_url = spec.get("url", "") or spec.get("git", "")
+
+    if "github.com" in github_url:
+        # Extract owner/repo from URL
+        # Example: https://github.com/stern/stern/releases/download/v1.32.0/...
+        # Or: https://github.com/openshift/oc
+        parts = github_url.split("github.com/")
+        if len(parts) > 1:
+            repo_parts = parts[1].split("/")
+            if len(repo_parts) >= 2:
+                owner, repo = repo_parts[0], repo_parts[1]
+                # Remove .git suffix if present
+                repo = repo.rstrip(".git")
+
+                try:
+                    import json
+
+                    # Build curl command with authentication if token is available
+                    curl_base = ["curl", "-s"]
+                    if github_token:
+                        curl_base.extend(["-H", f"Authorization: token {github_token}"])
+
+                    # Try releases first
+                    api_url = f"https://api.github.com/repos/{owner}/{repo}/releases/latest"
+                    result = subprocess.run(
+                        curl_base + [api_url],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                        text=True
+                    )
+                    if result.returncode == 0:
+                        try:
+                            data = json.loads(result.stdout)
+                            tag = data.get("tag_name", "")
+                            if tag:
+                                # Strip common prefixes
+                                latest = tag.lstrip("v").lstrip("V")
+                                return latest, "github-releases"
+                        except json.JSONDecodeError:
+                            pass
+
+                    # Fallback: Try tags if no releases
+                    api_url = f"https://api.github.com/repos/{owner}/{repo}/tags"
+                    result = subprocess.run(
+                        curl_base + [api_url],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                        text=True
+                    )
+                    if result.returncode == 0:
+                        try:
+                            data = json.loads(result.stdout)
+                            if data and len(data) > 0:
+                                tag = data[0].get("name", "")
+                                if tag:
+                                    # Strip common prefixes
+                                    latest = tag.lstrip("v").lstrip("V")
+                                    return latest, "github-tags"
+                        except json.JSONDecodeError:
+                            pass
+                except:
+                    pass
+
+    return None, "No update check available"
+
+
+def check_all_updates(install_db_dir=None):
+    """Check for updates for all installed packages."""
+    install_db_dir = get_install_db_path(install_db_dir)
+    if not os.path.isdir(install_db_dir):
+        print("No tools installed.")
+        return
+
+    print(f"{'NAME':20} {'CURRENT':15} {'LATEST':15} {'STATUS':12} {'SOURCE':20}")
+    print("=" * 82)
+
+    update_count = 0
+
+    for fname in sorted(os.listdir(install_db_dir)):
+        if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+            continue
+
+        with open(os.path.join(install_db_dir, fname)) as f:
+            # Read only the first document (recipe spec)
+            content = f.read()
+            parts = content.split('\n---\n', 1)
+            if len(parts) < 1:
+                continue
+
+            spec = yaml.safe_load(parts[0])
+            if not spec:
+                continue
+
+            name = spec.get("name", "")
+            current_version = spec.get("version", "unknown")
+
+            # Evaluate variables for templating (needed for git URLs)
+            context = collect_variables(spec)
+            if "version" not in context:
+                context["version"] = current_version
+
+            # Evaluate git URL if it's templated
+            if "git" in spec:
+                git_url = spec["git"]
+                if "{{" in git_url:
+                    spec["git"] = evaluate_template(git_url, context)
+
+            # Check for updates
+            latest_version, source = check_update(name, current_version, spec)
+
+            if latest_version:
+                if latest_version != current_version:
+                    status = "UPDATE"
+                    update_count += 1
+                else:
+                    status = "up-to-date"
+            else:
+                status = "n/a"
+                latest_version = "-"
+
+            print(f"{name:20} {current_version:15} {latest_version:15} {status:12} {source:20}")
+
+    print("=" * 82)
+    if update_count > 0:
+        print(f"{update_count} package(s) have updates available")
+    else:
+        print("All packages are up to date")
+
+
 def verify_all_tools(install_db_dir=None):
     """Verify all installed packages."""
     install_db_dir = get_install_db_path(install_db_dir)
@@ -757,6 +955,11 @@ def main():
     p_verify.add_argument("--install-db", help="Override install DB path")
     p_verify.add_argument("--all", action="store_true", help="Verify all installed packages")
 
+    p_check_updates = subparsers.add_parser(
+        "check-updates", help="Check for available updates"
+    )
+    p_check_updates.add_argument("--install-db", help="Override install DB path")
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -775,6 +978,8 @@ def main():
             verify_all_tools(args.install_db)
         else:
             verify_tool(args.install_id, args.install_db)
+    elif args.command == "check-updates":
+        check_all_updates(args.install_db)
 
 
 if __name__ == "__main__":
