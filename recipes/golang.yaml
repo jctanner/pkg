@@ -10,7 +10,9 @@ variables:
 url: https://go.dev/dl/go{{ version }}.{{ os }}-{{ arch }}.tar.gz
 archive: tar
 extract:
-  - go/bin/
-dest: /usr/local/bin
+  - go
+dest: ~/bin
+install_name: golang{{ version }}
 install_mode: directory
+symlink_bin: ~/bin
 chmod: '0755'

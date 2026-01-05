@@ -293,6 +293,8 @@ def install_tool(
     version = spec.get("version", "unknown")
     chmod_spec = spec.get("chmod")
     install_mode = spec.get("install_mode", "single")  # NEW: Get install mode
+    install_name = spec.get("install_name")  # NEW: Optional rename for installed directory
+    symlink_bin = spec.get("symlink_bin")  # NEW: Path to create symlinks for bin/ executables
     source_yaml = os.path.abspath(yaml_file)
     context = collect_variables(spec)
 
@@ -304,6 +306,12 @@ def install_tool(
 
     url = evaluate_template(spec["url"], context) if "url" in spec else None
     dest_path = expand(evaluate_template(spec["dest"], context))
+
+    # NEW: Evaluate install_name and symlink_bin with templating
+    if install_name:
+        install_name = evaluate_template(install_name, context)
+    if symlink_bin:
+        symlink_bin = expand(evaluate_template(symlink_bin, context))
 
     # NEW: Handle dest differently based on install_mode
     installed_files = []  # Track all installed files
@@ -344,14 +352,32 @@ def install_tool(
                     shutil.copy(extracted_paths[0], final_dest)
                     installed_files.append(final_dest)
                 elif install_mode == 'directory':
-                    # New: Copy each extracted file to dest directory
+                    # New: Copy each extracted file/directory to dest directory
                     for extracted_path in extracted_paths:
-                        # Get the basename of the file (e.g., "go" from "tmpdir/go/bin/go")
+                        # Get the basename of the file or directory
                         basename = os.path.basename(extracted_path)
-                        dest_file = os.path.join(final_dest, basename)
-                        shutil.copy(extracted_path, dest_file)
-                        installed_files.append(dest_file)
-                        print(f"Copied {basename} to {dest_file}")
+
+                        # NEW: Use install_name to rename if specified
+                        if install_name and os.path.isdir(extracted_path):
+                            dest_path = os.path.join(final_dest, install_name)
+                        else:
+                            dest_path = os.path.join(final_dest, basename)
+
+                        if os.path.isdir(extracted_path):
+                            # Copy entire directory tree
+                            if os.path.exists(dest_path):
+                                shutil.rmtree(dest_path)
+                            shutil.copytree(extracted_path, dest_path)
+                            installed_files.append(dest_path)
+                            if install_name and install_name != basename:
+                                print(f"Copied directory {basename} to {dest_path} (renamed to {install_name})")
+                            else:
+                                print(f"Copied directory {basename} to {dest_path}")
+                        else:
+                            # Copy single file
+                            shutil.copy(extracted_path, dest_path)
+                            installed_files.append(dest_path)
+                            print(f"Copied {basename} to {dest_path}")
         else:
             # Direct download (no archive)
             download(url, final_dest)
@@ -388,6 +414,25 @@ def install_tool(
         for installed_file in installed_files:
             apply_chmod_recursive(installed_file, chmod_spec, install_mode)
 
+    # NEW: Create symlinks for bin executables if requested
+    created_symlinks = []
+    if symlink_bin and install_mode == 'directory':
+        os.makedirs(symlink_bin, exist_ok=True)
+        # Find all executables in installed_files/bin/ directory
+        for installed_path in installed_files:
+            bin_dir = os.path.join(installed_path, 'bin')
+            if os.path.isdir(bin_dir):
+                for fname in os.listdir(bin_dir):
+                    fpath = os.path.join(bin_dir, fname)
+                    if os.path.isfile(fpath) and os.access(fpath, os.X_OK):
+                        # Create symlink in symlink_bin directory
+                        symlink_path = os.path.join(symlink_bin, fname)
+                        if os.path.lexists(symlink_path):
+                            os.remove(symlink_path)  # Remove existing symlink/file
+                        os.symlink(fpath, symlink_path)
+                        created_symlinks.append(symlink_path)
+                        print(f"Created symlink: {symlink_path} -> {fpath}")
+
     # Print installation summary
     if install_mode == 'single':
         print(f"Installed {name} to {final_dest}")
@@ -395,6 +440,8 @@ def install_tool(
         print(f"Installed {name} to {final_dest} ({len(installed_files)} files)")
         for f in installed_files:
             print(f"  - {f}")
+        if created_symlinks:
+            print(f"Created {len(created_symlinks)} symlink(s) in {symlink_bin}")
 
     install_db_dir = get_install_db_path(install_db_dir)
     os.makedirs(install_db_dir, exist_ok=True)
@@ -405,11 +452,22 @@ def install_tool(
 
     # NEW: Calculate SHA256 checksums for all installed files
     checksums = {}
+    all_files = []  # Track all individual files for checksums
     for filepath in installed_files:
         if os.path.isfile(filepath):
             checksum = calculate_sha256(filepath)
             if checksum:
                 checksums[filepath] = checksum
+                all_files.append(filepath)
+        elif os.path.isdir(filepath):
+            # For directories, calculate checksums for all files within
+            for root, dirs, files in os.walk(filepath):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    checksum = calculate_sha256(fpath)
+                    if checksum:
+                        checksums[fpath] = checksum
+                        all_files.append(fpath)
 
     # NEW: Enhanced metadata format with install_mode and installed_files
     rendered_metadata = {
@@ -423,6 +481,7 @@ def install_tool(
         "install_mode": install_mode,  # NEW: Track install mode
         "installed_files": installed_files,  # NEW: Track all installed files
         "checksums": checksums,  # NEW: Track SHA256 checksums
+        "symlinks": created_symlinks,  # NEW: Track created symlinks
     }
 
     with open(os.path.join(install_db_dir, filename), "w") as f:
@@ -489,12 +548,23 @@ def uninstall_tool(install_id, install_db_dir=None):
     # NEW: Get install_mode and installed_files with backward compatibility
     install_mode = meta.get("install_mode", "single")
     installed_files = meta.get("installed_files", [])
+    symlinks = meta.get("symlinks", [])
 
     # Backward compatibility: fall back to installed_to if no installed_files
     if not installed_files:
         installed_to = meta.get("installed_to")
         if installed_to:
             installed_files = [installed_to]
+
+    # NEW: Remove symlinks first
+    if symlinks:
+        for symlink in symlinks:
+            if os.path.lexists(symlink):
+                print(f"Removing symlink: {symlink}")
+                try:
+                    os.remove(symlink)
+                except Exception as e:
+                    print(f"Failed to remove symlink {symlink}: {e}")
 
     # Remove all installed files/directories
     removed_count = 0
@@ -561,31 +631,47 @@ def verify_tool(install_id, install_db_dir=None):
     print(f"Verifying {name} {version} ({install_mode} mode):")
 
     all_valid = True
-    for filepath in installed_files:
-        if not os.path.exists(filepath):
-            print(f"  ✗ {filepath}: File missing")
-            all_valid = False
-        elif filepath in stored_checksums:
-            # We have a checksum to verify
-            actual_checksum = calculate_sha256(filepath)
-            expected_checksum = stored_checksums[filepath]
 
-            if actual_checksum == expected_checksum:
-                print(f"  ✓ {filepath}: Checksum valid")
-            else:
-                print(f"  ✗ {filepath}: Checksum mismatch")
-                print(f"    Expected: {expected_checksum}")
-                print(f"    Actual:   {actual_checksum}")
+    # If we have checksums, verify all files with checksums
+    if stored_checksums:
+        valid_count = 0
+        invalid_count = 0
+        missing_count = 0
+
+        for filepath, expected_checksum in stored_checksums.items():
+            if not os.path.exists(filepath):
+                print(f"  ✗ {filepath}: File missing")
+                missing_count += 1
                 all_valid = False
-        else:
-            # No checksum stored (old metadata format)
-            if os.path.isfile(filepath):
+            else:
+                actual_checksum = calculate_sha256(filepath)
+                if actual_checksum == expected_checksum:
+                    valid_count += 1
+                else:
+                    print(f"  ✗ {filepath}: Checksum mismatch")
+                    print(f"    Expected: {expected_checksum}")
+                    print(f"    Actual:   {actual_checksum}")
+                    invalid_count += 1
+                    all_valid = False
+
+        # Show summary
+        total = len(stored_checksums)
+        print(f"  Summary: {valid_count}/{total} files valid", end="")
+        if invalid_count > 0:
+            print(f", {invalid_count} checksum mismatches", end="")
+        if missing_count > 0:
+            print(f", {missing_count} missing", end="")
+        print()
+    else:
+        # No checksums stored (old metadata format) - just check existence
+        for filepath in installed_files:
+            if not os.path.exists(filepath):
+                print(f"  ✗ {filepath}: Path missing")
+                all_valid = False
+            elif os.path.isfile(filepath):
                 print(f"  ? {filepath}: Exists (no checksum to verify)")
             elif os.path.isdir(filepath):
                 print(f"  ? {filepath}: Directory exists (no checksum)")
-            else:
-                print(f"  ✗ {filepath}: Path missing")
-                all_valid = False
 
     return all_valid
 
