@@ -1,0 +1,16 @@
+name: golang
+version: 1.25.5
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m | sed -e 's/x86_64/amd64/' -e 's/aarch64/arm64/'
+
+url: https://go.dev/dl/go{{ version }}.{{ os }}-{{ arch }}.tar.gz
+archive: tar
+extract:
+  - go/bin/
+dest: /usr/local/bin
+install_mode: directory
+chmod: '0755'

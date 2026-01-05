@@ -91,39 +91,156 @@ def download(url, dest):
             out_file.write(response.read())
 
 
-def extract_archive(archive_type, archive_path, extract_list, dest_dir):
+def calculate_sha256(filepath):
+    """Calculate SHA256 checksum of a file."""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(filepath, "rb") as f:
+            # Read file in chunks to handle large files
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        print(f"Warning: Failed to calculate checksum for {filepath}: {e}")
+        return None
+
+
+def apply_chmod_recursive(path, chmod_spec, install_mode):
+    """Apply chmod permissions to files, with special handling for directory mode."""
+    if not chmod_spec:
+        return
+
+    try:
+        # Parse chmod specification
+        if isinstance(chmod_spec, int) or str(chmod_spec).isdigit():
+            mode = int(str(chmod_spec), 8)
+        elif chmod_spec.startswith("0o"):
+            mode = int(chmod_spec, 8)
+        elif chmod_spec.startswith("+"):
+            st = os.stat(path)
+            mode = st.st_mode | int(chmod_spec.replace("+", "0o"), 8)
+        else:
+            raise ValueError("Unsupported chmod format")
+
+        if install_mode == 'single' or not os.path.exists(path):
+            # Single file mode or file doesn't exist
+            if os.path.exists(path):
+                os.chmod(path, mode)
+                print(f"Set permissions: {oct(mode)} on {path}")
+        elif os.path.isfile(path):
+            # Single file in directory mode
+            if os.access(path, os.X_OK):  # Only chmod if already executable
+                os.chmod(path, mode)
+                print(f"Set permissions: {oct(mode)} on {path}")
+        elif os.path.isdir(path):
+            # Directory mode: apply to executables only
+            for root, dirs, files in os.walk(path):
+                for fname in files:
+                    fpath = os.path.join(root, fname)
+                    # Only chmod files that are already executable
+                    if os.access(fpath, os.X_OK):
+                        os.chmod(fpath, mode)
+                        print(f"Set permissions: {oct(mode)} on {fpath}")
+    except Exception as e:
+        print(f"Failed to apply chmod '{chmod_spec}' to {path}: {e}")
+
+
+def extract_archive(archive_type, archive_path, extract_list, dest_dir, install_mode='single'):
+    """
+    Extract files/directories from archive.
+
+    Args:
+        archive_type: 'tar' or 'zip'
+        archive_path: Path to archive file
+        extract_list: List of files/directories to extract
+        dest_dir: Temporary extraction directory
+        install_mode: 'single' (default) or 'directory'
+
+    Returns:
+        List of extracted paths (files or directories) in dest_dir
+    """
+    extracted_paths = []
+
     if archive_type == "tar":
-        '''
         with tarfile.open(archive_path, "r:*") as tar:
             members = tar.getmembers()
-            for name in extract_list:
-                # Find the actual member with matching basename
-                matched = [m for m in members if os.path.basename(m.name) == name]
-                if not matched:
-                    raise FileNotFoundError(f"{name} not found in archive")
-                for m in matched:
-                    tar.extract(m, path=dest_dir)
-        '''
-        with tarfile.open(archive_path, "r:*") as tar:
-            members = tar.getmembers()
-            for name in extract_list:
-                # Match by basename, e.g., looking for 'helm'
-                matched = [m for m in members if m.name == name or os.path.basename(m.name) == name]
-                if not matched:
-                    raise FileNotFoundError(f"{name} not found in archive")
-                for m in matched:
-                    tar.extract(m, path=dest_dir)
+
+            for pattern in extract_list:
+                if install_mode == 'single':
+                    # Legacy behavior: match by basename for single file
+                    matched = [m for m in members if m.name == pattern or os.path.basename(m.name) == pattern]
+                    if not matched:
+                        raise FileNotFoundError(f"{pattern} not found in archive")
+                    for m in matched:
+                        tar.extract(m, path=dest_dir)
+                    # Return the first matched file path for backward compatibility
+                    extracted_paths.append(os.path.join(dest_dir, matched[0].name))
+
+                elif install_mode == 'directory':
+                    # New behavior: support directory extraction
+                    if pattern.endswith('/'):
+                        # Extract directory contents (flatten)
+                        dir_prefix = pattern.rstrip('/')
+                        dir_members = [m for m in members
+                                     if m.name.startswith(dir_prefix + '/') and m.name != dir_prefix]
+                        if not dir_members:
+                            raise FileNotFoundError(f"Directory {pattern} not found or empty in archive")
+
+                        # Extract all files from the directory
+                        for m in dir_members:
+                            tar.extract(m, path=dest_dir)
+                            # Calculate relative path within the directory
+                            rel_path = m.name[len(dir_prefix)+1:]  # Remove "go/bin/" prefix
+                            if rel_path and not m.isdir():  # Skip the directory itself and empty paths
+                                extracted_paths.append(os.path.join(dest_dir, m.name))
+                    else:
+                        # Extract directory with structure preserved
+                        matched = [m for m in members if m.name == pattern or m.name.startswith(pattern + '/')]
+                        if not matched:
+                            raise FileNotFoundError(f"{pattern} not found in archive")
+                        for m in matched:
+                            tar.extract(m, path=dest_dir)
+                        extracted_paths.append(os.path.join(dest_dir, pattern))
+
     elif archive_type == "zip":
         with zipfile.ZipFile(archive_path, "r") as zipf:
-            for name in extract_list:
-                # Match the file by basename, similar to tar handling
-                matched = [z for z in zipf.namelist() if os.path.basename(z) == name]
-                if not matched:
-                    raise FileNotFoundError(f"{name} not found in archive")
-                for z in matched:
-                    zipf.extract(z, path=dest_dir)
+            namelist = zipf.namelist()
+
+            for pattern in extract_list:
+                if install_mode == 'single':
+                    # Legacy behavior
+                    matched = [z for z in namelist if os.path.basename(z) == pattern]
+                    if not matched:
+                        raise FileNotFoundError(f"{pattern} not found in archive")
+                    for z in matched:
+                        zipf.extract(z, path=dest_dir)
+                    extracted_paths.append(os.path.join(dest_dir, matched[0]))
+
+                elif install_mode == 'directory':
+                    if pattern.endswith('/'):
+                        # Extract directory contents (flatten)
+                        dir_prefix = pattern.rstrip('/')
+                        dir_files = [z for z in namelist
+                                   if z.startswith(dir_prefix + '/') and z != dir_prefix and z != dir_prefix + '/']
+                        if not dir_files:
+                            raise FileNotFoundError(f"Directory {pattern} not found or empty in archive")
+
+                        for z in dir_files:
+                            zipf.extract(z, path=dest_dir)
+                            rel_path = z[len(dir_prefix)+1:]
+                            if rel_path and not z.endswith('/'):  # Skip directory entries
+                                extracted_paths.append(os.path.join(dest_dir, z))
+                    else:
+                        matched = [z for z in namelist if z == pattern or z.startswith(pattern + '/')]
+                        if not matched:
+                            raise FileNotFoundError(f"{pattern} not found in archive")
+                        for z in matched:
+                            zipf.extract(z, path=dest_dir)
+                        extracted_paths.append(os.path.join(dest_dir, pattern))
     else:
         raise ValueError(f"Unsupported archive type: {archive_type}")
+
+    return extracted_paths
 
 
 def resolve_yaml_source(yaml_path, recipe_repo=None):
@@ -175,6 +292,7 @@ def install_tool(
     name = spec["name"]
     version = spec.get("version", "unknown")
     chmod_spec = spec.get("chmod")
+    install_mode = spec.get("install_mode", "single")  # NEW: Get install mode
     source_yaml = os.path.abspath(yaml_file)
     context = collect_variables(spec)
 
@@ -186,15 +304,28 @@ def install_tool(
 
     url = evaluate_template(spec["url"], context) if "url" in spec else None
     dest_path = expand(evaluate_template(spec["dest"], context))
-    final_dest = None
 
-    if override_dest_dir:
-        override_dest_dir = expand(override_dest_dir)
-        os.makedirs(override_dest_dir, exist_ok=True)
-        final_dest = os.path.join(override_dest_dir, os.path.basename(dest_path))
+    # NEW: Handle dest differently based on install_mode
+    installed_files = []  # Track all installed files
+
+    if install_mode == 'single':
+        # Legacy behavior: dest is the full path to the file
+        if override_dest_dir:
+            override_dest_dir = expand(override_dest_dir)
+            os.makedirs(override_dest_dir, exist_ok=True)
+            final_dest = os.path.join(override_dest_dir, os.path.basename(dest_path))
+        else:
+            os.makedirs(os.path.dirname(dest_path), exist_ok=True)
+            final_dest = dest_path
+    elif install_mode == 'directory':
+        # New behavior: dest is the parent directory for multiple files
+        if override_dest_dir:
+            final_dest = expand(override_dest_dir)
+        else:
+            final_dest = dest_path
+        os.makedirs(final_dest, exist_ok=True)
     else:
-        os.makedirs(os.path.dirname(dest_path), exist_ok=True)
-        final_dest = dest_path
+        raise ValueError(f"Invalid install_mode: {install_mode}. Must be 'single' or 'directory'")
 
     if url:
         archive = spec.get("archive")
@@ -205,11 +336,26 @@ def install_tool(
             with tempfile.TemporaryDirectory(prefix=f"pkg-{name}-") as tmpdir:
                 tmp_archive = os.path.join(tmpdir, "archive")
                 download(url, tmp_archive)
-                extract_archive(archive, tmp_archive, extract, tmpdir)
-                extracted_path = os.path.join(tmpdir, extract[0])
-                shutil.copy(extracted_path, final_dest)
+                # NEW: Pass install_mode and get list of extracted paths
+                extracted_paths = extract_archive(archive, tmp_archive, extract, tmpdir, install_mode)
+
+                if install_mode == 'single':
+                    # Legacy: Copy single file
+                    shutil.copy(extracted_paths[0], final_dest)
+                    installed_files.append(final_dest)
+                elif install_mode == 'directory':
+                    # New: Copy each extracted file to dest directory
+                    for extracted_path in extracted_paths:
+                        # Get the basename of the file (e.g., "go" from "tmpdir/go/bin/go")
+                        basename = os.path.basename(extracted_path)
+                        dest_file = os.path.join(final_dest, basename)
+                        shutil.copy(extracted_path, dest_file)
+                        installed_files.append(dest_file)
+                        print(f"Copied {basename} to {dest_file}")
         else:
+            # Direct download (no archive)
             download(url, final_dest)
+            installed_files.append(final_dest)
 
     elif "git" in spec:
         git_url = evaluate_template(spec["git"], context)
@@ -224,28 +370,31 @@ def install_tool(
             artifact_path = os.path.join(tmpdir, artifact)
             if not os.path.exists(artifact_path):
                 raise FileNotFoundError(f"Built artifact not found: {artifact_path}")
-            shutil.copy(artifact_path, final_dest)
+            # Git builds currently only support single file mode
+            if install_mode == 'single':
+                shutil.copy(artifact_path, final_dest)
+                installed_files.append(final_dest)
+            else:
+                raise ValueError("Git builds currently only support install_mode='single'")
 
     else:
         raise ValueError("YAML must contain either 'url' or 'git' field")
 
-    if chmod_spec:
-        try:
-            if isinstance(chmod_spec, int) or str(chmod_spec).isdigit():
-                mode = int(str(chmod_spec), 8)
-            elif chmod_spec.startswith("0o"):
-                mode = int(chmod_spec, 8)
-            elif chmod_spec.startswith("+"):
-                st = os.stat(final_dest)
-                mode = st.st_mode | int(chmod_spec.replace("+", "0o"), 8)
-            else:
-                raise ValueError("Unsupported chmod format")
-            os.chmod(final_dest, mode)
-            print(f"Set permissions: {oct(mode)} on {final_dest}")
-        except Exception as e:
-            print(f"Failed to apply chmod '{chmod_spec}': {e}")
+    # NEW: Apply chmod using new helper function
+    if install_mode == 'single':
+        apply_chmod_recursive(final_dest, chmod_spec, install_mode)
+    else:
+        # For directory mode, apply chmod to each installed file
+        for installed_file in installed_files:
+            apply_chmod_recursive(installed_file, chmod_spec, install_mode)
 
-    print(f"Installed {name} to {final_dest}")
+    # Print installation summary
+    if install_mode == 'single':
+        print(f"Installed {name} to {final_dest}")
+    else:
+        print(f"Installed {name} to {final_dest} ({len(installed_files)} files)")
+        for f in installed_files:
+            print(f"  - {f}")
 
     install_db_dir = get_install_db_path(install_db_dir)
     os.makedirs(install_db_dir, exist_ok=True)
@@ -254,6 +403,15 @@ def install_tool(
     install_id = hashlib.sha256(hash_input.encode()).hexdigest()[:12]
     filename = f"PKG_{install_id}.yaml"
 
+    # NEW: Calculate SHA256 checksums for all installed files
+    checksums = {}
+    for filepath in installed_files:
+        if os.path.isfile(filepath):
+            checksum = calculate_sha256(filepath)
+            if checksum:
+                checksums[filepath] = checksum
+
+    # NEW: Enhanced metadata format with install_mode and installed_files
     rendered_metadata = {
         "name": name,
         "version": version,
@@ -262,6 +420,9 @@ def install_tool(
         "installed_to": final_dest,
         "installed_at": datetime.now(timezone.utc).isoformat(),
         "variables": context,
+        "install_mode": install_mode,  # NEW: Track install mode
+        "installed_files": installed_files,  # NEW: Track all installed files
+        "checksums": checksums,  # NEW: Track SHA256 checksums
     }
 
     with open(os.path.join(install_db_dir, filename), "w") as f:
@@ -274,7 +435,8 @@ def list_installed(install_db_dir=None):
         print("No tools installed.")
         return
 
-    print(f"{'ID':12} {'NAME':20} {'VERSION':10} {'PATH'}")
+    # NEW: Updated header with MODE and INSTALLED columns
+    print(f"{'ID':12} {'NAME':20} {'VERSION':10} {'MODE':8} {'INSTALLED':16} {'PATH'}")
     for fname in sorted(os.listdir(install_db_dir)):
         if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
             continue
@@ -284,8 +446,31 @@ def list_installed(install_db_dir=None):
             if len(docs) < 2:
                 continue
             meta = docs[1]
+
+            # NEW: Get install_mode and file count
+            install_mode = meta.get('install_mode', 'single')
+            mode_display = install_mode[:6]  # Truncate for display
+            installed_path = meta.get('installed_to', '')
+
+            # NEW: Format installed_at timestamp
+            installed_at = meta.get('installed_at', '')
+            if installed_at:
+                try:
+                    # Parse ISO format timestamp and show just date and time
+                    dt = datetime.fromisoformat(installed_at.replace('Z', '+00:00'))
+                    date_display = dt.strftime('%Y-%m-%dT%H:%M')
+                except:
+                    date_display = installed_at[:16]  # Fallback to first 16 chars
+            else:
+                date_display = 'unknown'
+
+            # NEW: Show count for multi-file installations
+            if install_mode != 'single' and 'installed_files' in meta:
+                file_count = len(meta['installed_files'])
+                installed_path = f"{installed_path} ({file_count} files)"
+
             print(
-                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {meta.get('installed_to','')}"
+                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {mode_display:8} {date_display:16} {installed_path}"
             )
 
 
@@ -301,15 +486,108 @@ def uninstall_tool(install_id, install_db_dir=None):
         docs = list(yaml.safe_load_all(f))
         meta = docs[1] if len(docs) > 1 else {}
 
-    binary_path = meta.get("installed_to")
-    if binary_path and os.path.exists(binary_path):
-        print(f"Removing binary: {binary_path}")
-        os.remove(binary_path)
-    else:
-        print(f"Binary path {binary_path} does not exist")
+    # NEW: Get install_mode and installed_files with backward compatibility
+    install_mode = meta.get("install_mode", "single")
+    installed_files = meta.get("installed_files", [])
+
+    # Backward compatibility: fall back to installed_to if no installed_files
+    if not installed_files:
+        installed_to = meta.get("installed_to")
+        if installed_to:
+            installed_files = [installed_to]
+
+    # Remove all installed files/directories
+    removed_count = 0
+    for item in installed_files:
+        if not item:
+            continue
+
+        if os.path.isdir(item):
+            # Remove directory tree
+            print(f"Removing directory: {item}")
+            try:
+                shutil.rmtree(item)
+                removed_count += 1
+            except Exception as e:
+                print(f"Failed to remove directory {item}: {e}")
+        elif os.path.isfile(item):
+            # Remove single file
+            print(f"Removing file: {item}")
+            try:
+                os.remove(item)
+                removed_count += 1
+            except Exception as e:
+                print(f"Failed to remove file {item}: {e}")
+        else:
+            print(f"Path does not exist (may have been manually deleted): {item}")
+
+    if removed_count > 0:
+        print(f"Removed {removed_count} file(s)/directory(ies)")
 
     print(f"Removing metadata: {path}")
     os.remove(path)
+
+
+def verify_tool(install_id, install_db_dir=None):
+    """Verify that installed files exist and match their stored checksums."""
+    install_db_dir = get_install_db_path(install_db_dir)
+    fname = f"PKG_{install_id}.yaml"
+    path = os.path.join(install_db_dir, fname)
+
+    if not os.path.exists(path):
+        print(f"No metadata found for install ID {install_id}")
+        return False
+
+    with open(path) as f:
+        docs = list(yaml.safe_load_all(f))
+        meta = docs[1] if len(docs) > 1 else {}
+
+    name = meta.get("name", "unknown")
+    version = meta.get("version", "unknown")
+    install_mode = meta.get("install_mode", "single")
+    installed_files = meta.get("installed_files", [])
+    stored_checksums = meta.get("checksums", {})
+
+    # Backward compatibility: fall back to installed_to if no installed_files
+    if not installed_files:
+        installed_to = meta.get("installed_to")
+        if installed_to:
+            installed_files = [installed_to]
+
+    if not installed_files:
+        print(f"✗ {name} {version}: No files tracked in metadata")
+        return False
+
+    print(f"Verifying {name} {version} ({install_mode} mode):")
+
+    all_valid = True
+    for filepath in installed_files:
+        if not os.path.exists(filepath):
+            print(f"  ✗ {filepath}: File missing")
+            all_valid = False
+        elif filepath in stored_checksums:
+            # We have a checksum to verify
+            actual_checksum = calculate_sha256(filepath)
+            expected_checksum = stored_checksums[filepath]
+
+            if actual_checksum == expected_checksum:
+                print(f"  ✓ {filepath}: Checksum valid")
+            else:
+                print(f"  ✗ {filepath}: Checksum mismatch")
+                print(f"    Expected: {expected_checksum}")
+                print(f"    Actual:   {actual_checksum}")
+                all_valid = False
+        else:
+            # No checksum stored (old metadata format)
+            if os.path.isfile(filepath):
+                print(f"  ? {filepath}: Exists (no checksum to verify)")
+            elif os.path.isdir(filepath):
+                print(f"  ? {filepath}: Directory exists (no checksum)")
+            else:
+                print(f"  ✗ {filepath}: Path missing")
+                all_valid = False
+
+    return all_valid
 
 
 def main():
@@ -336,6 +614,12 @@ def main():
     p_uninstall.add_argument("install_id", help="Install ID shown by 'pkg list'")
     p_uninstall.add_argument("--install-db", help="Override install DB path")
 
+    p_verify = subparsers.add_parser(
+        "verify", help="Verify installed files match their checksums"
+    )
+    p_verify.add_argument("install_id", help="Install ID shown by 'pkg list'")
+    p_verify.add_argument("--install-db", help="Override install DB path")
+
     args = parser.parse_args()
 
     if args.command == "install":
@@ -349,6 +633,8 @@ def main():
         list_installed(args.install_db)
     elif args.command == "uninstall":
         uninstall_tool(args.install_id, args.install_db)
+    elif args.command == "verify":
+        verify_tool(args.install_id, args.install_db)
 
 
 if __name__ == "__main__":
