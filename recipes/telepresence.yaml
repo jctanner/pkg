@@ -1,5 +1,5 @@
 name: telepresence
-version: v2.23.6
+version: 2.25.2
 
 variables:
   arch:
@@ -7,6 +7,6 @@ variables:
   os:
     literal: linux
 
-url: https://github.com/telepresenceio/telepresence/releases/download/{{ version }}/telepresence-{{ os }}-{{ arch }}
+url: https://github.com/telepresenceio/telepresence/releases/download/v{{ version }}/telepresence-{{ os }}-{{ arch }}
 dest: ~/bin/telepresence
 chmod: '0755'

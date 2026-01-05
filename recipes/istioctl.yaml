@@ -1,5 +1,5 @@
 name: istioctl
-version: 1.26.2
+version: 1.28.2
 
 variables:
   os:

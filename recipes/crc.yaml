@@ -1,7 +1,7 @@
 # https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.51.0/crc-linux-amd64.tar.xz
 # https://developers.redhat.com/content-gateway/file/pub/openshift-v4/clients/crc/2.55.1/crc-linux-amd64.tar.xz
 name: crc
-version: 2.55.1
+version: 2.57.0
 
 variables:
   os:

@@ -1,5 +1,5 @@
 name: kustomize
-version: v5.6.0
+version: kustomize/v5.8.0
 
 variables:
   os:

@@ -1,5 +1,5 @@
 name: kubebuilder
-version: v4.6.0
+version: 4.10.1
 
 variables:
   os:

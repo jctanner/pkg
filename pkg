@@ -1122,6 +1122,202 @@ def update_command(package_names=None, update_all=False, skip_confirmation=False
         print()
 
 
+def update_packages(package_names=None, update_all=False, skip_confirmation=False,
+                    install_db_dir=None, override_dest_dir=None, recipe_repo=None):
+    """
+    Update installed packages to match their recipe versions.
+
+    Args:
+        package_names: List of package names to update (or None if update_all=True)
+        update_all: Update all installed packages
+        skip_confirmation: Skip confirmation prompt (--yes flag)
+        install_db_dir: Path to install database
+        override_dest_dir: Override destination directory for installation
+        recipe_repo: Override recipe repository URL
+    """
+    install_db_dir = get_install_db_path(install_db_dir)
+
+    if not os.path.isdir(install_db_dir):
+        print("No tools installed.")
+        return
+
+    # Phase 1: Gather candidates
+    candidates = []
+
+    if update_all:
+        # Get all installed packages
+        for fname in sorted(os.listdir(install_db_dir)):
+            if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+                continue
+
+            install_id = fname.replace("PKG_", "").replace(".yaml", "")
+            with open(os.path.join(install_db_dir, fname)) as f:
+                content = f.read()
+                parts = content.split('\n---\n', 1)
+                if len(parts) < 1:
+                    continue
+                spec = yaml.safe_load(parts[0])
+                if not spec:
+                    continue
+
+                name = spec.get("name", "")
+                current_version = spec.get("version", "unknown")
+                # Store the original recipe source (file path or name for remote lookup)
+                recipe_source = spec.get("_recipe_source", name)
+                candidates.append((name, current_version, recipe_source, install_id))
+    else:
+        # Get specific packages
+        for name in package_names:
+            # Find package in install DB
+            found = False
+            for fname in os.listdir(install_db_dir):
+                if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
+                    continue
+
+                install_id = fname.replace("PKG_", "").replace(".yaml", "")
+                with open(os.path.join(install_db_dir, fname)) as f:
+                    content = f.read()
+                    parts = content.split('\n---\n', 1)
+                    if len(parts) < 1:
+                        continue
+                    spec = yaml.safe_load(parts[0])
+                    if not spec or spec.get("name") != name:
+                        continue
+
+                    current_version = spec.get("version", "unknown")
+                    recipe_source = spec.get("_recipe_source", name)
+                    candidates.append((name, current_version, recipe_source, install_id))
+                    found = True
+                    break
+
+            if not found:
+                print(f"Warning: Package '{name}' is not installed")
+
+    if not candidates:
+        print("No packages to check for updates")
+        return
+
+    # Phase 2: Check recipe versions
+    updates = []
+
+    for name, current_version, recipe_source, install_id in candidates:
+        try:
+            # Load the recipe to get the version
+            # Try local file first, then remote
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            local_recipe_path = os.path.join(script_dir, "recipes", f"{name}.yaml")
+
+            recipe_content = None
+            if os.path.isfile(local_recipe_path):
+                with open(local_recipe_path) as f:
+                    recipe_content = f.read()
+            else:
+                # Try remote recipe
+                try:
+                    recipe_url = get_raw_recipe_url(name, recipe_repo)
+                    result = subprocess.run(
+                        ["curl", "-s", "-f", recipe_url],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        timeout=10,
+                        text=True
+                    )
+                    if result.returncode == 0:
+                        recipe_content = result.stdout
+                except:
+                    pass
+
+            if not recipe_content:
+                print(f"Warning: Could not load recipe for '{name}'")
+                continue
+
+            # Parse recipe version
+            recipe_spec = yaml.safe_load(recipe_content)
+            recipe_version = recipe_spec.get("version", "unknown")
+
+            # Compare versions
+            if recipe_version != current_version:
+                updates.append({
+                    'name': name,
+                    'current_version': current_version,
+                    'recipe_version': recipe_version,
+                    'recipe_source': recipe_source,
+                    'install_id': install_id
+                })
+
+        except Exception as e:
+            print(f"Warning: Error checking recipe for '{name}': {e}")
+            continue
+
+    if not updates:
+        print("All packages are up to date with their recipes")
+        return
+
+    # Phase 3: Display and confirm
+    print("\nThe following packages will be updated:\n")
+    print(f"{'NAME':20} {'CURRENT':15} {'RECIPE':15}")
+    print("=" * 50)
+
+    for update in updates:
+        print(f"{update['name']:20} {update['current_version']:15} "
+              f"{update['recipe_version']:15}")
+
+    print("=" * 50)
+    print(f"{len(updates)} package(s) will be updated\n")
+
+    if not skip_confirmation:
+        try:
+            response = input("Proceed with updates? [y/N]: ")
+            if response.lower() not in ('y', 'yes'):
+                print("Update cancelled")
+                return
+        except (KeyboardInterrupt, EOFError):
+            print("\nUpdate cancelled")
+            return
+
+    # Phase 4: Execute updates
+    print("\nUpdating packages...")
+    success_count = 0
+    failed_count = 0
+
+    for update in updates:
+        name = update['name']
+
+        print(f"\nUpdating {name} ({update['current_version']} -> {update['recipe_version']})...")
+        try:
+            # Uninstall current version first
+            uninstall_tool(update['install_id'], install_db_dir)
+
+            # Install new version from recipe
+            # Use local recipe if it exists, otherwise use the original recipe source
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            local_recipe_path = os.path.join(script_dir, "recipes", f"{name}.yaml")
+
+            if os.path.isfile(local_recipe_path):
+                recipe_to_use = local_recipe_path
+            else:
+                recipe_to_use = update['recipe_source']
+
+            install_tool(
+                recipe_to_use,
+                override_dest_dir=override_dest_dir,
+                install_db_dir=install_db_dir,
+                recipe_repo=recipe_repo
+            )
+            print(f"✓ Updated {name} to {update['recipe_version']}")
+            success_count += 1
+        except Exception as e:
+            print(f"✗ Failed to update {name}: {e}")
+            failed_count += 1
+
+    # Summary
+    print(f"\nSummary: {success_count} updated", end="")
+    if failed_count > 0:
+        print(f", {failed_count} failed")
+    else:
+        print()
+
+
 def verify_all_tools(install_db_dir=None):
     """Verify all installed packages."""
     install_db_dir = get_install_db_path(install_db_dir)
@@ -1197,8 +1393,23 @@ def main():
     )
     p_check_updates.add_argument("--install-db", help="Override install DB path")
 
-    p_update = subparsers.add_parser(
+    p_update_recipes = subparsers.add_parser(
         "update-recipes", help="Update recipe version numbers"
+    )
+    p_update_recipes.add_argument(
+        "package_name", nargs='*', help="Package name(s) to update"
+    )
+    p_update_recipes.add_argument(
+        "--all", action="store_true", help="Update all installed packages"
+    )
+    p_update_recipes.add_argument(
+        "--yes", "-y", action="store_true", help="Skip confirmation prompt"
+    )
+    p_update_recipes.add_argument("--install-db", help="Override install DB path")
+    p_update_recipes.add_argument("--recipes-dir", help="Override recipes directory path")
+
+    p_update = subparsers.add_parser(
+        "update", help="Update installed packages to match recipe versions"
     )
     p_update.add_argument(
         "package_name", nargs='*', help="Package name(s) to update"
@@ -1210,7 +1421,8 @@ def main():
         "--yes", "-y", action="store_true", help="Skip confirmation prompt"
     )
     p_update.add_argument("--install-db", help="Override install DB path")
-    p_update.add_argument("--recipes-dir", help="Override recipes directory path")
+    p_update.add_argument("--dest-dir", help="Override destination directory")
+    p_update.add_argument("--recipe-repo", help="Override recipe repository URL")
 
     args = parser.parse_args()
 
@@ -1243,6 +1455,19 @@ def main():
             skip_confirmation=args.yes,
             install_db_dir=args.install_db,
             recipes_dir=getattr(args, 'recipes_dir', None)
+        )
+    elif args.command == "update":
+        if not args.all and not args.package_name:
+            print("Error: Specify package name(s) or use --all")
+            sys.exit(1)
+
+        update_packages(
+            package_names=args.package_name if args.package_name else None,
+            update_all=args.all,
+            skip_confirmation=args.yes,
+            install_db_dir=args.install_db,
+            override_dest_dir=getattr(args, 'dest_dir', None),
+            recipe_repo=getattr(args, 'recipe_repo', None)
         )
 
 
