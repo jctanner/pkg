@@ -501,10 +501,21 @@ def list_installed(install_db_dir=None):
             continue
         install_id = fname[4:-5]
         with open(os.path.join(install_db_dir, fname)) as f:
-            docs = list(yaml.safe_load_all(f))
-            if len(docs) < 2:
+            # Optimization: Skip loading the entire file with checksums
+            # Read file content and split on document separator
+            content = f.read()
+            # Find the second YAML document (metadata)
+            parts = content.split('\n---\n', 1)
+            if len(parts) < 2:
                 continue
-            meta = docs[1]
+            # Parse only the metadata portion, skip checksums to avoid loading 14k+ entries
+            metadata_yaml = parts[1]
+            # Find where checksums section starts and truncate there
+            checksum_pos = metadata_yaml.find('\nchecksums:')
+            if checksum_pos != -1:
+                # Only parse metadata up to checksums
+                metadata_yaml = metadata_yaml[:checksum_pos]
+            meta = yaml.safe_load(metadata_yaml) or {}
 
             # NEW: Get install_mode and file count
             install_mode = meta.get('install_mode', 'single')
