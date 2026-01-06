@@ -495,7 +495,7 @@ def list_installed(install_db_dir=None):
         return
 
     # NEW: Updated header with MODE and INSTALLED columns
-    print(f"{'ID':12} {'NAME':20} {'VERSION':10} {'MODE':8} {'INSTALLED':16} {'PATH'}")
+    print(f"{'ID':12} {'NAME':20} {'VERSION':45} {'MODE':8} {'INSTALLED':16} {'PATH'}")
     for fname in sorted(os.listdir(install_db_dir)):
         if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
             continue
@@ -540,7 +540,7 @@ def list_installed(install_db_dir=None):
                 installed_path = f"{installed_path} ({file_count} files)"
 
             print(
-                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):10} {mode_display:8} {date_display:16} {installed_path}"
+                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):45} {mode_display:8} {date_display:16} {installed_path}"
             )
 
 
@@ -829,8 +829,8 @@ def check_all_updates(install_db_dir=None):
         print("No tools installed.")
         return
 
-    print(f"{'NAME':20} {'CURRENT':15} {'LATEST':15} {'STATUS':12} {'SOURCE':20}")
-    print("=" * 82)
+    print(f"{'NAME':20} {'CURRENT':45} {'LATEST':45} {'STATUS':12} {'SOURCE':20}")
+    print("=" * 142)
 
     update_count = 0
 
@@ -876,9 +876,9 @@ def check_all_updates(install_db_dir=None):
                 status = "n/a"
                 latest_version = "-"
 
-            print(f"{name:20} {current_version:15} {latest_version:15} {status:12} {source:20}")
+            print(f"{name:20} {current_version:45} {latest_version:45} {status:12} {source:20}")
 
-    print("=" * 82)
+    print("=" * 142)
     if update_count > 0:
         print(f"{update_count} package(s) have updates available")
     else:
@@ -1078,14 +1078,14 @@ def update_command(package_names=None, update_all=False, skip_confirmation=False
 
     # Phase 3: Display and confirm
     print("\nThe following recipes will be updated:\n")
-    print(f"{'NAME':20} {'CURRENT':15} {'LATEST':15} {'SOURCE':20}")
-    print("=" * 70)
+    print(f"{'NAME':20} {'CURRENT':45} {'LATEST':45} {'SOURCE':20}")
+    print("=" * 130)
 
     for update in updates:
-        print(f"{update['name']:20} {update['current_version']:15} "
-              f"{update['latest_version']:15} {update['source']:20}")
+        print(f"{update['name']:20} {update['current_version']:45} "
+              f"{update['latest_version']:45} {update['source']:20}")
 
-    print("=" * 70)
+    print("=" * 130)
     print(f"{len(updates)} recipe(s) will be updated\n")
 
     if not skip_confirmation:
@@ -1255,14 +1255,14 @@ def update_packages(package_names=None, update_all=False, skip_confirmation=Fals
 
     # Phase 3: Display and confirm
     print("\nThe following packages will be updated:\n")
-    print(f"{'NAME':20} {'CURRENT':15} {'RECIPE':15}")
-    print("=" * 50)
+    print(f"{'NAME':20} {'CURRENT':45} {'RECIPE':45}")
+    print("=" * 110)
 
     for update in updates:
-        print(f"{update['name']:20} {update['current_version']:15} "
-              f"{update['recipe_version']:15}")
+        print(f"{update['name']:20} {update['current_version']:45} "
+              f"{update['recipe_version']:45}")
 
-    print("=" * 50)
+    print("=" * 110)
     print(f"{len(updates)} package(s) will be updated\n")
 
     if not skip_confirmation:
