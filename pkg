@@ -494,9 +494,10 @@ def list_installed(install_db_dir=None):
         print("No tools installed.")
         return
 
-    # NEW: Updated header with MODE and INSTALLED columns
-    print(f"{'ID':12} {'NAME':20} {'VERSION':45} {'MODE':8} {'INSTALLED':16} {'PATH'}")
-    for fname in sorted(os.listdir(install_db_dir)):
+    # Collect all package information first
+    packages = []
+
+    for fname in os.listdir(install_db_dir):
         if not fname.startswith("PKG_") or not fname.endswith(".yaml"):
             continue
         install_id = fname[4:-5]
@@ -517,12 +518,12 @@ def list_installed(install_db_dir=None):
                 metadata_yaml = metadata_yaml[:checksum_pos]
             meta = yaml.safe_load(metadata_yaml) or {}
 
-            # NEW: Get install_mode and file count
+            # Get install_mode and file count
             install_mode = meta.get('install_mode', 'single')
             mode_display = install_mode[:6]  # Truncate for display
             installed_path = meta.get('installed_to', '')
 
-            # NEW: Format installed_at timestamp
+            # Format installed_at timestamp
             installed_at = meta.get('installed_at', '')
             if installed_at:
                 try:
@@ -534,14 +535,29 @@ def list_installed(install_db_dir=None):
             else:
                 date_display = 'unknown'
 
-            # NEW: Show count for multi-file installations
+            # Show count for multi-file installations
             if install_mode != 'single' and 'installed_files' in meta:
                 file_count = len(meta['installed_files'])
                 installed_path = f"{installed_path} ({file_count} files)"
 
-            print(
-                f"{install_id:12} {meta.get('name',''):20} {meta.get('version',''):45} {mode_display:8} {date_display:16} {installed_path}"
-            )
+            packages.append({
+                'id': install_id,
+                'name': meta.get('name', ''),
+                'version': meta.get('version', ''),
+                'mode': mode_display,
+                'installed': date_display,
+                'path': installed_path
+            })
+
+    # Sort by name
+    packages.sort(key=lambda p: p['name'].lower())
+
+    # Print header and sorted packages
+    print(f"{'ID':12} {'NAME':20} {'VERSION':45} {'INSTALLED':16} {'PATH'}")
+    for pkg in packages:
+        print(
+            f"{pkg['id']:12} {pkg['name']:20} {pkg['version']:45} {pkg['installed']:16} {pkg['path']}"
+        )
 
 
 def uninstall_tool(install_id, install_db_dir=None):

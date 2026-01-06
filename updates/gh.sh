@@ -1,5 +1,5 @@
 #!/bin/bash
-# Check for latest kubectl version from Kubernetes GitHub tags
+# Check for latest gh (GitHub CLI) version from GitHub releases
 
 # Build curl command with authentication if GITHUB_TOKEN is set
 CURL_CMD="curl -s"
@@ -7,8 +7,7 @@ if [ -n "$GITHUB_TOKEN" ]; then
     CURL_CMD="curl -s -H \"Authorization: token $GITHUB_TOKEN\""
 fi
 
-# Get first stable release (no -alpha, -beta, -rc suffix)
-tag=$(eval $CURL_CMD https://api.github.com/repos/kubernetes/kubernetes/tags | jq -r '[.[] | select(.name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+$"))][0].name')
+tag=$(eval $CURL_CMD https://api.github.com/repos/cli/cli/releases/latest | jq -r '.tag_name')
 if [ "$tag" = "null" ] || [ -z "$tag" ]; then
     exit 1
 fi
