@@ -1,0 +1,15 @@
+name: opm
+version: latest-4.21
+
+variables:
+  os:
+    literal: linux
+  arch:
+    shell: uname -m
+
+url: https://mirror.openshift.com/pub/openshift-v4/{{ arch }}/clients/ocp/{{ version }}/opm-{{ os }}.tar.gz
+archive: tar
+extract:
+  - opm-rhel8
+dest: ~/bin/opm
+chmod: '0755'
